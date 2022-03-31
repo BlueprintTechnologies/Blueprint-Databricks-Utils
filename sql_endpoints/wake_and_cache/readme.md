@@ -1,4 +1,7 @@
 ##Purpose
+
+This notebook is unique in a way since it is a python notebook which runs on a Data Science and Engineering type workspace, but is a utility for SQL Endpoints.
+
 This notebook is a simple pattern to "wake up" a Databricks SQL endpoint and prepare it for a large load.
 The common usecase we find with many clients is that they have a large set of reporting to power through on say Monday mornings.
 
