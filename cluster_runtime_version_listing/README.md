@@ -1,7 +1,7 @@
 ## Purpose
 This notebook is attended to help find what versions of Databricks Runtime is available.  
 The output of the API call returns the value for Databricks Runtime to be used to create a cluster.
-A good use case is with Azure Data Factory to start a Job Cluster with a particular Runtime value.ickly to enable better performance when the reports do start.
+A good use case is with Azure Data Factory to start a Job Cluster with a particular Runtime value.
 
 ##### NOTE: 
 
