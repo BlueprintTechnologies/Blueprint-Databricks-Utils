@@ -1,0 +1,220 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC ##Purpose
+# MAGIC This notebook hosts a set of classes for accessing an Azure storage account. It is very effective as a helper class for other classes.  
+# MAGIC ####Use Cases: 
+# MAGIC * A: Data files created in Databricks need to be stored as blobs in an Azure storage account
+# MAGIC * B: Blobs stored in an Azure storage containers need to be pulled into Databricks
+# MAGIC ####NOTE:
+# MAGIC Storage container access credentials need to be set up in the **StorageAccountSetup** class.  
+# MAGIC It is recommended to follow the implemented coding pattern and store access details in an [Azure Keyvault backed secret scope](https://learn.microsoft.com/en-us/azure/databricks/security/secrets/secret-scopes#azure-key-vault-backed-scopes)
+# MAGIC 
+# MAGIC Example:  
+# MAGIC class ExampleClass:  
+# MAGIC     def __init__(self):
+# MAGIC         self._storage_account = StorageAccount('myAcct')
+# MAGIC         # Retrieve list of files in storage account
+# MAGIC         self.files = [x.name for x in self._storage_account.container_client.list_blobs()]
+# MAGIC 
+# MAGIC 
+# MAGIC     def retrieve_file_from_storage(self, file_name):
+# MAGIC         blob = self._storage_account.retrieve_blob(file_name)
+# MAGIC         blob_content = blob.download_blob().readall()
+# MAGIC         return blob_content
+# MAGIC 
+# MAGIC     def upload_to_storage(self, data, file_name):
+# MAGIC         self._storage_account.upload_blob(data, file_name, overwrite=True)
+# MAGIC         return None
+
+# COMMAND ----------
+
+# DBTITLE 1,Import library functions
+import pandas as pd
+
+from datetime import date, datetime, timedelta
+from azure.storage.blob import BlobServiceClient
+
+# COMMAND ----------
+
+# DBTITLE 1,StorageAccountSetup class definition
+class StorageAccountSetup:        
+    @classmethod
+    def setup_account(cls, account_name):
+        """
+        :account_name (str): storage account for which credentials will be retrieved
+        """
+        acct_credentials = {
+            "account_name_1":cls._account1_credentials,
+            "account_name_2":cls._account2_credentials}[account_name]
+        
+        return acct_credentials()
+    
+    @staticmethod
+    def _account1_credentials():
+        """Retrieve storage account credentials for account1"""
+        return {
+            "name": dbutils.secrets.get(scope="azure_key_vault",key="key-vault-secret-name"),
+            "account_key": dbutils.secrets.get(scope="azure_key_vault",key="key-vault-secret-name"),
+            "container": dbutils.secrets.get(scope="azure_key_vault",key="key-vault-secret-name")
+        }
+    
+    @staticmethod
+    def _account2_credentials():
+        """Retrieve storage account credentials for account2"""
+        return {
+            "name": dbutils.secrets.get(scope="azure_key_vault",key="key-vault-secret-name"),
+            "account_key": dbutils.secrets.get(scope="azure_key_vault",key="key-vault-secret-name"),
+            "container": dbutils.secrets.get(scope="azure_key_vault",key="key-vault-secret-name")
+        }
+
+# COMMAND ----------
+
+# DBTITLE 1,StorageAccount class definition
+class StorageAccount:
+    """
+    Class for managing connection to an Azure storage account
+    param:storage_account_name (str): storage account name
+    """
+    def __init__(self, storage_account_name):
+        self.today = date.today().strftime("%Y%m%d")
+        self.utc_ts = datetime.utcnow()
+        
+        # Storage account setup
+        self._account = StorageAccountSetup.setup_account(storage_account_name)
+        
+        # Setup account service clients
+        self.service = self._get_service_client()
+        self.blob_client = self._get_blob_client()
+        self.container_client = self._get_container_client()
+        
+    
+    def previous_date(self, days_previous:int=1):
+        """
+        :param days_previous (int): Number of days previous to today to target
+        """
+        # Retrieve the date of a previous day in datetime format
+        previous_day = self.utc_ts - timedelta(days_previous)
+        YYYY = previous_day.year
+        mm = previous_day.month
+        dd = previous_day.day
+        return datetime(YYYY,mm,dd).astimezone()
+    
+    def yesterday(self):
+        # Retrieve the date previous to today
+        return self.previous_date()
+    
+    def _get_service_client(self):
+        #Retrieve storage account URL for file management
+        get_acct_url = lambda acct: f"https://{acct}.blob.core.windows.net"
+        acct_url = get_acct_url(self._account["name"])
+        return BlobServiceClient(acct_url,credential=self._credentials())
+    
+    def _get_blob_client(self):
+        """Setup the storage service blob client"""
+        return self.service.get_blob_client(self._account["name"],self._account["container"])
+    
+    def _get_container_client(self):
+        """Setup the storage service container client"""
+        return self.service.get_container_client(self._account["container"])
+    
+    def _credentials(self):
+        return {
+            "account_name": self._account["name"],
+            "account_key": self._account["account_key"]
+        }
+        
+    def get_blob_list(self, name_starts_with=None, last_modified_YYYYmmdd=None):
+        """Collect list of blobs from the storage account
+        :param name_starts_with (str): Function retrieves all files whose paths/names begin with the passed string
+        :param last_modified_YYYYmmdd (str): limit results to files last modified prior to the passed string with format YYYYmmdd (e.g.: 20220523)
+        """
+        if last_modified_YYYYmmdd is not None:
+            datefmt_tz = lambda d: datetime(int(d[:4]),int(d[4:6]),int(d[6:]))
+            last_modified_YYYYmmdd = datefmt(last_modified_YYYYmmdd).astimezone()
+            
+            blob_list = [blob.name for blob in self.container_client.list_blobs(name_starts_with) 
+                         if blob.size > 0 and blob.last_modified < last_modified_YYYYmmdd]
+        else:
+            blob_list = [blob.name for blob in self.container_client.list_blobs(name_starts_with) if blob.size > 0]
+            
+        return blob_list
+        
+    def file_location(self, file_name, storage_layers_dict):
+        """Retrieve the location for a specified blob
+        :param file_name (str): name of the specific file to be retrieved
+        :param storage_layers (dict): order key-value pairs to determine the storage address
+        
+        e.g.: file_location(file_name, folder1='folderName', subfolder='subfolderName') would yield:
+        folder1=folderName/subfolder=subfolderName/file_name
+        
+        However, file_location(file_name, subfolder='subfolderName', folder1='folderName') would yield:
+        subfolder=subfolderName/folder1=folderName/file_name
+        """
+        location = ""
+        
+        for layer in storage_layers_dict:
+            location+= f'{layer}={storage_layers_dict[layer]}/'
+            
+        location = location + file_name
+        return location
+    
+    def retrieve_blob(self, file):
+        #Retrieve the URL for a specified blob
+        get_blob_url = lambda acct,contnr,file: f"https://{acct}.blob.core.windows.net/{contnr}/{file}"
+        
+        blob_url = get_blob_url(
+            self._account["name"],
+            self._account["container"], 
+            file)
+        
+        return self.blob_client.from_blob_url(blob_url,credential=self._credentials())
+    
+    def upload_blob(self, blob_content, file_name, overwrite=False, **storage_layers):
+        """Retrieve the location for a specified blob
+        :param blob_content (dataframe): data to be stored in the account
+        :param file_name (str): name of the specific file to upload
+        :param overwrite (bool): indicates whether to overwrite existing files, if found
+        :param storage_layers (optional kwargs): keyword arguments to determine the storage address
+        """
+        csv_encode = lambda pandas_df: pandas_df.to_csv(index=False, encoding="utf8").encode()
+        
+        # Get blob location
+        blob_location = self.file_location(file_name, storage_layers)
+        blob = self.retrieve_blob(blob_location)
+        
+        print(f"checking blob location: {blob_location}...")
+        if not blob.exists():
+            if type(blob_content) == pd.DataFrame:
+                blob_content = csv_encode(blob_content)
+                
+            blob.upload_blob(blob_content)
+            print(f"Upload successful for: {blob_location}")
+        elif overwrite:
+            if type(blob_content) == pd.DataFrame:
+                blob_content = csv_encode(blob_content)
+                
+            blob.upload_blob(blob_content, overwrite=True)
+            print(f"Overwrite successful for: {blob_location}")
+        else:
+            print(f"{blob_location} already exists")
+            
+        print("Upload operation complete")
+        return None
+    
+    def delete_blob(self, file_location, **storage_layers):
+        """Delete a blob from the storage account
+        :param file_location (str): Name or address of the file to be deleted
+        :param storage_layers (optional kwargs): keyword arguments to determine the storage address
+        """
+        blob_location = self.file_location(file_name, storage_layers)
+        
+        blob = self.retrieve_blob(blob_location)
+        print(f"Locating {blob_location}...")
+        
+        if blob.exists():
+            blob.delete_blob()
+            print(f"Deleted {blob_location}")
+        else:
+            print(f"{blob_location} does not exist!")
+        
+        return None
