@@ -21,11 +21,17 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,PIP Install the Databricks SQL Connector
+#%pip install databricks-sql-connector
+
+# COMMAND ----------
+
 # DBTITLE 1,Notebook Parameters
-# dbutils.widgets.text("server_host", defaultValue="adb-############.azuredatabricks.net", label="server_host")
-# dbutils.widgets.text("endpoint_http_path", defaultValue="/sql/1.0/endpoints/##########", label="endpoint_http_path")
-# dbutils.widgets.dropdown("custom_cache", "False", ["True", "False"])
-# dbutils.widgets.text("max_cache_tables", defaultValue="10", label="max_cache_tables")
+##dbutils.widgets.text("server_host", defaultValue="adb-############.azuredatabricks.net", label="server_host")
+##dbutils.widgets.text("endpoint_http_path", defaultValue="/sql/1.0/endpoints/##########", label="endpoint_http_path")
+##dbutils.widgets.text("max_cache_tables", defaultValue="10", label="max_cache_tables")
+#dbutils.widgets.text("database_to_cache", defaultValue="default", label="database_to_cache")
+#dbutils.widgets.remove("catalog_dot_database_to_cache")
 
 # COMMAND ----------
 
@@ -36,13 +42,13 @@ from databricks import sql
 
 # DBTITLE 1,Gather SQL Endpoint Requirements
 # we get our databricks api token from secrets backed by an azure keyvault
-api_token = dbutils.secrets.get("db_api_scope","db_api_token")
+api_token = dbutils.secrets.get("ericv-adls-secrets","overwatch-pat-token")
 
 # grab all of our widget values
 server_host = dbutils.widgets.get("server_host")
 endpoint = dbutils.widgets.get("endpoint_http_path")
-custom_cache = dbutils.widgets.get("custom_cache")
 max_cache_tables = int(dbutils.widgets.get("max_cache_tables"))
+target_database = dbutils.widgets.get("database_to_cache")
 
 # COMMAND ----------
 
@@ -57,38 +63,34 @@ cursor = connection.cursor()
 
 # COMMAND ----------
 
-# DBTITLE 1,Collect a List of Tables to cache
-if custom_cache == "False":
-  # there are likely many catalogs/schemas/databases
-  # we will just take one catalog
-  cursor.catalogs()
-  catalog = cursor.fetchone()[0]
-
-  # get some tables in the selected catalog
-  cursor.tables(catalog_name=catalog)
-  catalog_tables = cursor.fetchall()
-  cache_tables = [
-    f'{x[1]}.{x[2]}'
-    for i,x in enumerate(catalog_tables)
-    if i < max_cache_tables
-  ]
+tables = list(spark.catalog.listTables(target_database))
+tables_to_cache = []
+for x in tables:
+  tables_to_cache.append(f'{x[1]}.{x[0]}')
   
-if custom_cache == "True":
-  # we will only cache the defined tables in this list
-  cache_tables = [
-    'example.table1',
-    'example.table2'
-  ]
+tables_to_cache
 
 # COMMAND ----------
 
 # DBTITLE 1,Cache the selected tables
-for table in cache_tables:
-  cursor.execute(f'CACHE SELECT * FROM {table}')
-  result = cursor.fetchall()
+for table in tables_to_cache:
+  sql_command_1 = f'select * from {table} limit 2'
+  #sql_command_2 = f'select * from {table} where rand() <= .3'
+  print(sql_command_1)
+  try:
+    cursor.execute(sql_command_1)
+    result = cursor.fetchall()
+    for row in result:
+      print(row)
+  except:
+    pass
 
 # COMMAND ----------
 
 # DBTITLE 1,Close Connection to DB SQL
 cursor.close()
 connection.close()
+
+# COMMAND ----------
+
+
