@@ -21,21 +21,24 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,PIP Install the Databricks SQL Connector
-#%pip install databricks-sql-connector
-
-# COMMAND ----------
-
 # DBTITLE 1,Notebook Parameters
 ##dbutils.widgets.text("server_host", defaultValue="adb-############.azuredatabricks.net", label="server_host")
 ##dbutils.widgets.text("endpoint_http_path", defaultValue="/sql/1.0/endpoints/##########", label="endpoint_http_path")
 ##dbutils.widgets.text("max_cache_tables", defaultValue="10", label="max_cache_tables")
 #dbutils.widgets.text("database_to_cache", defaultValue="default", label="database_to_cache")
-#dbutils.widgets.remove("catalog_dot_database_to_cache")
+#dbutils.widgets.remove("max_cache_tables")
 
 # COMMAND ----------
 
-# DBTITLE 1,Imports
+# DBTITLE 1,PIP Install the Databricks SQL Connector
+try:
+  from databricks import sql
+except:
+  %pip install databricks-sql-connector
+
+# COMMAND ----------
+
+# DBTITLE 1,Importers
 from databricks import sql
 
 # COMMAND ----------
@@ -47,7 +50,6 @@ api_token = dbutils.secrets.get("ericv-adls-secrets","overwatch-pat-token")
 # grab all of our widget values
 server_host = dbutils.widgets.get("server_host")
 endpoint = dbutils.widgets.get("endpoint_http_path")
-max_cache_tables = int(dbutils.widgets.get("max_cache_tables"))
 target_database = dbutils.widgets.get("database_to_cache")
 
 # COMMAND ----------
@@ -63,19 +65,18 @@ cursor = connection.cursor()
 
 # COMMAND ----------
 
+# DBTITLE 1,Collect Tables to Cache
 tables = list(spark.catalog.listTables(target_database))
 tables_to_cache = []
 for x in tables:
   tables_to_cache.append(f'{x[1]}.{x[0]}')
-  
-tables_to_cache
 
 # COMMAND ----------
 
-# DBTITLE 1,Cache the selected tables
+# DBTITLE 1,Cache the Selected Tables
 for table in tables_to_cache:
-  sql_command_1 = f'select * from {table} limit 2'
-  #sql_command_2 = f'select * from {table} where rand() <= .3'
+  sql_command_1 = f'cache select * from {table}'
+  sql_command_2 = f'select * from {table} where rand() <= .3'
   print(sql_command_1)
   try:
     cursor.execute(sql_command_1)
@@ -90,7 +91,3 @@ for table in tables_to_cache:
 # DBTITLE 1,Close Connection to DB SQL
 cursor.close()
 connection.close()
-
-# COMMAND ----------
-
-
