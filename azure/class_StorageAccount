@@ -174,12 +174,16 @@ class StorageAccount:
         :param blob_content (dataframe): data to be stored in the account
         :param file_name (str): name of the specific file to upload
         :param overwrite (bool): indicates whether to overwrite existing files, if found
+        :param storage_layers_dict: key-value arguments to determine the storage address. Will override storage_layers params
         :param storage_layers (optional kwargs): keyword arguments to determine the storage address
         """
         csv_encode = lambda pandas_df: pandas_df.to_csv(index=False, encoding="utf8").encode()
+        layers = storage_layers
+        if len(storage_layers_dict) > 0:
+            layers = storage_layers_dict
         
         # Get blob location
-        blob_location = self.file_location(file_name, storage_layers)
+        blob_location = self.file_location(file_name, layers)
         blob = self.retrieve_blob(blob_location)
         
         print(f"checking blob location: {blob_location}...")
@@ -201,12 +205,17 @@ class StorageAccount:
         print("Upload operation complete")
         return None
     
-    def delete_blob(self, file_location, **storage_layers):
+    def delete_blob(self, file_location, storage_layers_dict={}, **storage_layers):
         """Delete a blob from the storage account
         :param file_location (str): Name or address of the file to be deleted
+        :param storage_layers_dict: key-value arguments to determine the storage address. Will override storage_layers params
         :param storage_layers (optional kwargs): keyword arguments to determine the storage address
         """
-        blob_location = self.file_location(file_name, storage_layers)
+        layers = storage_layers
+        if len(storage_layers_dict) > 0:
+            layers = storage_layers_dict
+            
+        blob_location = self.file_location(file_name, layers)
         
         blob = self.retrieve_blob(blob_location)
         print(f"Locating {blob_location}...")
