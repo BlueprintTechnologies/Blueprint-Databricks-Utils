@@ -7,6 +7,7 @@
 # MAGIC * B: Template for accessing Google Analytics data and combining into a dataframe
 # MAGIC ####NOTE:
 # MAGIC It is recommended to follow the implemented coding pattern and store credentials in an [Azure Keyvault backed secret scope](https://learn.microsoft.com/en-us/azure/databricks/security/secrets/secret-scopes#azure-key-vault-backed-scopes)
+# MAGIC [Budgets API documentation](https://developer.intacct.com/api/general-ledger/budgets/)
 # MAGIC 
 # MAGIC Example:  
 # MAGIC IB = IntacctBudget()
