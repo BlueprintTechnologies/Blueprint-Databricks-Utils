@@ -1,0 +1,191 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC ##Purpose
+# MAGIC This notebook contains a class for retrieving Google Analytics data and storing inside of an Azure storage account.
+# MAGIC ####Use Cases: 
+# MAGIC * A: Databricks jobs that routinely update delta tables (merge and overwrite scenarios)
+# MAGIC * B: Template for accessing Google Analytics data and combining into a dataframe
+# MAGIC ####NOTE:
+# MAGIC This class assumes the Analytics API credentials are stored in JSON format as a Key vault secret
+# MAGIC 
+# MAGIC Example:  
+# MAGIC layer = ['bronze','silver','gold'][0]
+# MAGIC bronze_dw = DeltaWriter(layer)
+# MAGIC 
+# MAGIC gac = GoogleAnalyticsCollector()
+# MAGIC all_analytics_data = []
+# MAGIC 
+# MAGIC for account in gac.accounts:
+# MAGIC     analytics_df = gac.get_account_analytics(account.get('id'), account.get('name'))
+# MAGIC     all_analytics_data.append(analytics_df)
+# MAGIC gac.service.close()
+# MAGIC 
+# MAGIC data_df = all_analytics_data[0]
+# MAGIC for data in all_analytics_data[1:]:
+# MAGIC     data_df = data_df.append(data)
+# MAGIC 
+# MAGIC data_df = data_df.reset_index(drop=True)
+# MAGIC 
+# MAGIC if write_mode == "create":
+# MAGIC     bronze_dw.write_delta_table(df, "new_table")
+# MAGIC elif write_mode == "merge":
+# MAGIC     bronze_dw.merge_delta_table(df, "existing_table", merge_col=["Year","Month","defaultChannelGrouping","viewId"], update_col=["Users","__Date"])
+
+# COMMAND ----------
+
+# DBTITLE 1,Import library functions
+import pandas as pd
+
+from json import loads
+from apiclient.discovery import build
+from oauth2client.service_account import ServiceAccountCredentials
+
+# COMMAND ----------
+
+# MAGIC %run ../class_StorageAccount
+
+# COMMAND ----------
+# DBTITLE 1,Class Definition
+class GoogleAnalyticsCollector:
+    def __init__(self):
+        '''
+        This class retrieves Google Analytics data for permitted profiles
+        Analytics can only be retrieved for entities that grant access to the service account email
+        (user@domain.iam.gserviceaccount.com)
+        '''
+        self.service = build("analytics", "v3", credentials=self._get_credentials())
+        
+        # Start date for analytics retrieval
+        self._DAY_ONE = "2018-01-01"
+        self.today = date.today().strftime("%Y-%m-%d")
+        
+        self.accounts = self._get_accounts()
+        
+        # Storage account setup
+        self._storage_account = StorageAccount('myAcct')
+    
+    
+    @staticmethod
+    def _get_credentials():
+        # Retrieve credentials for authentication
+        scope = "https://www.googleapis.com/auth/analytics.readonly"
+        json_key = loads(dbutils.secrets.getBytes(scope="key_vault",key="google-analytics-credentials"))
+        credentials = ServiceAccountCredentials.from_json_keyfile_dict(json_key, scope)
+        
+        return credentials
+    
+    
+    def _get_accounts(self):
+        """Get a list of all Google Analytics accounts for this user"""
+        # Reset account connection
+        self.service.close()
+        accounts_data = self.service.management().accounts().list().execute().get("items")
+        
+        return accounts_data
+    
+    
+    def _get_account_data(self, acct_id, acct_name):
+        """Retrieve and pair identified account data"""
+        acct_data = []
+        
+        properties = gac.service.management().webproperties().list(
+            accountId=acct_id).execute()
+        
+        if properties.get("items"):
+            totalProperties = properties.get("totalResults")
+            
+            for prop_iter in range(totalProperties):
+                # Get the property id
+                property_id = properties.get('items')[prop_iter].get('id')
+                property_name = properties.get('items')[prop_iter].get('name')
+                
+                profiles = gac.service.management().profiles().list(
+                    accountId=acct_id, webPropertyId=property_id).execute()
+                
+                if profiles.get('items'):
+                    totalProfiles = profiles.get("totalResults")
+                    
+                    for prof_iter in range(totalProfiles):
+                        # return the view (profile) id
+                        profile_id = profiles.get('items')[prof_iter].get('id')
+                        profile_name = profiles.get('items')[prof_iter].get('name')
+                        
+                        # Build dict
+                        new_acct_data = {
+                            "id":acct_id,
+                            "Account":acct_name, 
+                            "webProperty":property_name,
+                            "View":profile_name,
+                            "viewId":profile_id
+                        }
+                        
+                        acct_data.append(new_acct_data)
+                        
+        return acct_data
+    
+    @staticmethod
+    def _pair_analytics(account_data, analytics):
+        """Pair account data with analytics data"""
+        cols_list = ['Year','Month','defaultChannelGrouping','Users']
+        acct_cols_list= ["sampledData", "Account", "webProperty", "View", "viewId"]
+        analytics_df = pd.DataFrame(analytics.get("rows"), columns=cols_list)
+        
+        account_data['sampledData'] = analytics.get("containsSampledData")
+        total_results = analytics.get("totalResults")
+        account_df = pd.DataFrame([account_data]*total_results, columns=acct_cols_list)
+        
+        analytics_df = analytics_df.join(account_df, how="outer")
+        
+        print(f'Retrieved analytics for {account_data.get("Account")} - {account_data.get("webProperty")}')
+        return analytics_df
+    
+    
+    def _get_analytics_data(self, acct_data):
+        """Query the Core Reporting API"""
+        
+        fetch_analytics = lambda profile_id: self.service.data().ga().get(
+            ids='ga:' + profile_id,
+            start_date=self._DAY_ONE,
+            end_date='today',
+            metrics='ga:users',
+            dimensions='ga:year, ga:month, ga:channelGrouping').execute()
+        
+        analytics_data = fetch_analytics(acct_data.get("viewId"))
+        
+        print(f'Successfully retrieved analytics for {acct_data.get("Account")} - {acct_data.get("webProperty")}')
+        return analytics_data
+       
+    
+    def get_account_analytics(self, acct_id, acct_name):
+        """Retrieve analytics data for the specified account"""
+        print(f"Attempting to process account: {acct_name}...")
+        all_account_data = self._get_account_data(acct_id, acct_name)
+        
+        all_analytics_data = []
+        for account_data in all_account_data:
+            analytics_data = self._get_analytics_data(account_data)
+            all_analytics_data.append(analytics_data)
+        
+        # pair account data with analytics data
+        analytics_df = self._pair_analytics(all_account_data[0], all_analytics_data[0])
+        
+        if len(all_account_data) > 1:
+            for account,analytics in zip(all_account_data[1:], all_analytics_data[1:]):
+                pair_df = self._pair_analytics(account, analytics)
+                analytics_df = analytics_df.append(pair_df)
+        
+        analytics_df = analytics_df.reset_index(drop=True)
+        return analytics_df
+    
+    
+    def upload_data_to_raw_storage(self, account_data):
+        """Upload analytics data to raw storage account"""
+        
+        get_org_name = lambda df: df.loc[df.first_valid_index()].Account.replace(" ","").lower()
+        file_date = self.today.replace("-","")
+        organization = get_org_name(account_data)
+        csv_name = f"{organization}_analytics_{file_date}_all.csv"
+        
+        self._storage_account.upload_blob(account_data, csv_name, org_name=organization)
+        
+        return None
