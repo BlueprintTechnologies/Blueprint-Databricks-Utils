@@ -8,7 +8,7 @@ A good use case is with Azure Data Factory to start a Job Cluster with a particu
 A [Databricks Personal Access Token](https://docs.databricks.com/dev-tools/api/latest/authentication.html#:~:text=Generate%20a%20personal%20access%20token,-This%20section%20describes&text=Settings%20in%20the%20lower%20left,the%20Generate%20New%20Token%20button.) is required to authenticate the API from this notebook.
 
 
-##### NOTE2b: 
+##### NOTE2a: 
 
 Knowing the URL of your databricks instance is needed as well.
 
