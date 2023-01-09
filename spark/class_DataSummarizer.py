@@ -18,7 +18,7 @@ class SparkDataSummary:
         self.dbName = dbName.lower()
         self.tableName = tableName.lower()
         self.df = self._convert_ts_to_string(df)
-        self._summaryTypes = ('bool','numeric','string','distinct_values')
+        self._summaryTypes = ('bool','numeric','string')
         
         if dtypeChanges is not None:
             self.update_dtypes(dtypeChanges)
@@ -326,12 +326,14 @@ class SparkDataSummary:
         """Write unique string value summary to the database
         :param profileDB (str): Database to write profile data to
         """
+        if self._string_data_profile is None:
+            self.unique_string_values_count()
+        
         summary_data = self._string_data_profile
         summary_type = "unique_string_values"
         
         if summary_data is None:
-            print(f"No data found in {self.tableName}. Skipping distinct value summary.")
-            self.unique_string_values_count()
+            print(f"No string data found in {self.tableName}. Skipping unique string values summary.")
         else:
             print(f"Attempting to write unique string values summary for {self.tableName} . . .")
             
@@ -527,6 +529,7 @@ class SparkDataSummary:
         table = dtype.lower() + "_summary"
         
         df.write.saveAsTable(table, mode='append', partitionBy=['__date','SourceDatabase','SourceTable'])
+        _ = spark.sql(f"OPTIMIZE {profileDB}.{table}")
         print("Write successful!")
         return None
     
