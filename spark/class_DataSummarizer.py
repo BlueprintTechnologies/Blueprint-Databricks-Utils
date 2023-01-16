@@ -12,8 +12,8 @@ class SparkDataSummary:
         :param df (dataframe): Dataframe to be profiled
         :param dbName (str): Database name of table being profiled
         :param tableName (str): Name of the table being profiled
-        :param dtypeChanges (str): Accepts comma-delimited string of column-type associations 
-        e.g.: "col1 int,col2 bool" will attempt to cast col1 and col2 as integer and boolean types, respectively.
+        :param dtypeChanges (dict): Accepts dict of column-type key-value pairs
+        e.g.: {"col1":"integer", "col2":"bool"} will attempt to cast col1 and col2 as integer and boolean types, respectively.
         """
         self.dbName = dbName.lower()
         self.tableName = tableName.lower()
@@ -230,18 +230,12 @@ class SparkDataSummary:
     
     def update_dtypes(self, colTypes:str, returnSchema=True):
         """Cast columns as different types
-        :param colTypes (str): Accepts comma-delimited string of column-type associations 
+        :param colTypes (dict): Accepts dict of column-type key-value pairs
         e.g.: "col1 int,col2 bool" will attempt to cast col1 and col2 as integer and boolean types, respectively.
         
         :param returnSchema (boolean): Returns new dataframe schema, if True
         """
-        # Remove extra spaces from the string
-        for r in range(5,0,-1):
-            colTypes = colTypes.replace(" "*r, " ")
-        colTypes = colTypes.replace(", ", ",")
-        
-        for ct in colTypes.split(","):
-            column, dtype = ct.split(' ')
+        for column,dtype in zip(colTypes.keys(),colTypes.values()):
             sparkType = self._get_spark_data_type(dtype)
             try:
                 self.df = self.df.withColumn(column, f.col(column).cast(sparkType))
