@@ -7,12 +7,21 @@ from pyspark.sql.types import *
 
 # DBTITLE 1,Class Definition
 class SparkDataSummary:
-    def __init__(self, df, dtypeChanges=None):
-        self.df = df
+    def __init__(self, df, dbName:str, tableName:str, dtypeChanges=None):
+        """Initialization
+        :param df (dataframe): Dataframe to be profiled
+        :param dbName (str): Database name of table being profiled
+        :param tableName (str): Name of the table being profiled
+        :param dtypeChanges (str): Accepts (strictly) comma-delimited string of column-type associations 
+        e.g.: "col1 int,col2 bool" will attempt to cast col1 and col2 as integer and boolean types, respectively.
+        """
+        self.dbName = dbName.lower()
+        self.tableName = tableName.lower()
+        self.df = self._convert_ts_to_string(df)
         self._summaryTypes = ('bool','numeric','string')
         
         if dtypeChanges is not None:
-            self.udpate_dtypes(dtypeChanges)
+            self.update_dtypes(dtypeChanges)
         
         # Get typed dataframes
         self._boolean_df = self._typed_df("bool")
@@ -24,14 +33,18 @@ class SparkDataSummary:
         self._null_counts = self._get_null_counts()
         self._bool_counts = self._get_bool_counts()
         
+        # Summary data
         self._summary = {"bool":None,"numeric":None,"string":None}
+        self._distinct_value_summary = None
+        self._string_data_profile = None
     
     #----- PUBLIC METHODS -----#
-    def distinct_value_summary(self):
-        """Display a distinct value counts summary for numeric and string columns
+    def distinct_value_summary(self, showSummary=True):
+        """Create and display a distinct value counts summary for numeric and string columns
         """
         distinct = lambda x: df.select(x).distinct().count()
         
+        # Summarize string and numeric columns
         df_columns = self._string_df.columns.copy()
         df_columns.extend(self._numeric_df.columns)
         df = self.df.select(df_columns)
@@ -45,24 +58,83 @@ class SparkDataSummary:
         __ = [new_row.update({c:str(distinct(c))}) for c in df_columns]
         new_rows.append(new_row)
         
+        # Join column summary metrics
         summary_df = summary_df.unionByName(spark.createDataFrame(new_rows))
+        summary_pivot_df = summary_df.unpivot("summary", df_columns,"ColumnName","value")
+        counts_df = summary_pivot_df.where(
+            "summary=='count'").withColumnRenamed(
+            "value","TotalValues").drop("summary")
         
-        print("Distinct Values Summary:")
-        display(summary_df)
+        distincts_df = summary_pivot_df.where(
+            "summary=='distinct'").withColumnRenamed(
+            "value","DistinctCount").withColumnRenamed(
+            "ColumnName","Match").drop("summary")
+        summary_pivot_df = counts_df.join(distincts_df, [counts_df.ColumnName==distincts_df.Match]).drop("Match")
+        
+        final_summary_df = summary_pivot_df.withColumn(
+            "SourceDatabase",f.lit(self.dbName)).withColumn(
+            "SourceTable",f.lit(self.tableName)).withColumn(
+            "TotalRecords",f.lit(self.row_count).astype(LongType()))
+        
+        final_summary_df = final_summary_df.select(
+            "SourceDatabase","SourceTable","TotalRecords","ColumnName",f.col("TotalValues").astype(LongType()),
+            f.col("DistinctCount").astype(LongType())).orderBy(
+            f.col("DistinctCount").desc())
+        
+        self._distinct_value_summary = final_summary_df
+        
+        if showSummary:
+            print("Distinct Values Summary:")
+            display(self._distinct_value_summary)
+        
+        return None
+        
+    def full_summary(self, showSummary=True):
+        """Create and display all available summary data"""
+        self.summarize('numeric', showSummary)
+        self.summarize('string', showSummary)
+        self.summarize('bool', showSummary)
+        self.distinct_value_summary(showSummary)
         
         return None
     
-    def full_summary(self):
-        """Display all available summary data"""
-        self.summarize('numeric')
-        self.summarize('string')
-        self.summarize('bool')
-        self.distinct_value_summary()
+    def get_distinct_value_summary(self):
+        """Retrieve distinct value data summary
+        """
+        summary = self._distinct_value_summary
         
-        return None
+        if summary is None:
+            self.distinct_value_summary(showSummary=False)
+            summary = self._distinct_value_summary
+        
+        return summary
     
-    def summarize(self, dtype='numeric'):
-        """Display a profile for all columns of the specified 'dtype'
+    def get_summary(self, dtype):
+        """Retrieve a typed data summary
+        :param dtype (str): Accepts these values: "bool", "numeric", "string"
+        """
+        assert dtype in self._summaryTypes, f"Invalid dtype: accepts {self._summaryTypes}"
+        summary = self._summary.get(dtype)
+        
+        if summary is None:
+            self.summarize(dtype, showSummary=False)
+            summary = self._summary.get(dtype)
+        
+        return summary
+    
+    def get_unique_string_values_summary(self):
+        """Retrieve unique string values summary
+        """
+        summary = self._string_data_profile
+        
+        if summary is None:
+            self.unique_string_values_count(showSummary=False)
+            summary = self._string_data_profile
+        
+        return summary
+    
+    def summarize(self, dtype='numeric', showSummary=True):
+        """Create and display a profile for all columns of the specified 'dtype'
         :param dtype (str): Accepts these values: "bool", "numeric", "string"
         """
         assert dtype in self._summaryTypes, f"Invalid dtype: accepts {self._summaryTypes}"
@@ -112,16 +184,51 @@ class SparkDataSummary:
             elif dtype == 'string':
                 summary_df = df.summary('count')
                 summary_df = summary_df.unionByName(spark.createDataFrame(new_rows))
-
-            print(f"{dtype.title()} Data Summary:")
-
+                
             self._summary.update({dtype:summary_df})
-        
-        display(self._summary.get(dtype))
+            
+        if showSummary:
+            print(f"{dtype.title()} Data Summary:")
+            display(self._summary.get(dtype))
         
         return None
     
-    def udpate_dtypes(self, colTypes:str, returnSchema=True):
+    def unique_string_values_count(self, showSummary=False, returnProfile=False):
+        """Identify and count unique values for each string column"""
+        retValue = None
+        if self._string_data_profile is None:
+            strSummary = self.get_summary('string')
+            str_columns = strSummary.columns[1:]
+            
+            # Create dataframe
+            schema = self._get_summary_schema('unique_string_values')
+            dtls_df = spark.createDataFrame(spark.sparkContext.emptyRDD(), schema)
+            
+            # Extract string column values data
+            for column in str_columns:
+                col_df = self.df.select(column).withColumn('CountCol', f.lit(1))
+                valueCounts = col_df.groupby(column).sum().collect()
+                
+                new_rows = []
+                for vc in valueCounts:
+                    v0 = vc[0]
+                    v1 = vc[1]
+                    new_rows.append((self.dbName, self.tableName, column, v0, v1))
+                    
+                dtls_df = dtls_df.union(spark.createDataFrame(new_rows, schema))
+                
+            self._string_data_profile = dtls_df
+            
+        if returnProfile:
+            retValue = self._string_data_profile
+            
+        if showSummary:
+            print("Unique String Values Summary:")
+            display(self._string_data_profile)
+        
+        return retValue
+    
+    def update_dtypes(self, colTypes:str, returnSchema=True):
         """Cast columns as different types
         :param colTypes (str): Accepts (strictly) comma-delimited string of column-type associations 
         e.g.: "col1 int,col2 bool" will attempt to cast col1 and col2 as integer and boolean types, respectively.
@@ -152,45 +259,101 @@ class SparkDataSummary:
         
         return retValue
     
-    def write_all_summary_data(self, dbName:str, tableName:str, profileDB='data_profile'):
+    def write_all_summary_data(self, profileDB='data_profile'):
         """Write all summary data to the database
-        :param dbName (str): Database name of table being profiled
-        :param tableName (str): Name of the table being profiled
         :param profileDB (str): Database to write profile data to
         """
-        # Collect metadata rows
-        for st in self._summaryTypes:
-            self.write_summary_to_table(st, dbName, tableName, profileDB)
+        # Write typed data summaries
+        for dtype in self._summaryTypes:
+            self.write_type_summary(dtype, profileDB)
+        
+        # Write distinct value summary
+        self.write_distinct_value_summary(profileDB)
         
         return None
     
-    def write_summary_to_table(self, dtype:str, dbName:str, tableName:str, profileDB='data_profile'):
-        """Write summary data to the database
-        :param dtype (str): Data type summary to save
-        :param dbName (str): Database name of table being profiled
-        :param tableName (str): Name of the table being profiled
+    def write_distinct_value_summary(self, profileDB='data_profile'):
+        """Write distinct value summary to the database
         :param profileDB (str): Database to write profile data to
         """
-        assert dtype in self._summaryTypes, f"Invalid dtype: accepts {self._summaryTypes}"
+        summary_data = self._distinct_value_summary
+        summary_type = "distinct_values"
+        
+        if self.row_count < 1:
+            print(f"No data found in {self.tableName}. Skipping distinct value summary.")
+        else:
+            print(f"Attempting to write distinct value summary for {self.tableName} . . .")
+            
+            # Collect metadata rows
+            summary_df = summary_data.withColumn("__date", f.current_date())
+            summary_df = self._transform_summary(summary_df, summary_type)
+            
+            # Write summary to database
+            self._summary_writer(summary_df, summary_type, profileDB)
+        return None
+    
+    def write_type_summary(self, dtype:str, profileDB='data_profile'):
+        """Write typed summary data to the database
+        :param dtype (str): Data type summary to save
+        :param profileDB (str): Database to write profile data to
+        """
+        assert dtype.lower() in self._summaryTypes, f"Invalid dtype: accepts {self._summaryTypes}"
         summary_data = self._summary.get(dtype)
         
-        # Collect metadata rows
-        new_rows_list = []
-        for c in summary_data.columns[1:]:
-            row_values = [dbName,tableName,c]
-            _ = [row_values.append(x.asDict().get(c)) for x in summary_data.select(c).collect()]
-            new_rows_list.append(row_values)
+        if len(summary_data.columns) < 2:
+            print(f"No {dtype} columns found in {self.tableName}. Skipping . . .")
+        else:
+            print(f"Attempting to write {dtype} summary for {self.tableName} . . .")
             
-        columns = ['SourceDatabase','SourceTable','ColumnName']
-        _ = [columns.append(x.asDict().get('summary').title()) for x in summary_data.select("summary").collect()]
+            # Collect metadata rows
+            new_rows_list = []
+            for c in summary_data.columns[1:]:
+                row_values = [self.dbName,self.tableName,c]
+                _ = [row_values.append(x.asDict().get(c)) for x in summary_data.select(c).collect()]
+                new_rows_list.append(row_values)
+                
+            columns = ['SourceDatabase','SourceTable','ColumnName']
+            _ = [columns.append(x.asDict().get('summary').title()) for x in summary_data.select("summary").collect()]
+            
+            summary_df = spark.createDataFrame(new_rows_list, columns).withColumn("__date", f.current_date())
+            summary_df = self._transform_summary(summary_df,dtype)
+            
+            # Write summary to database
+            self._summary_writer(summary_df, dtype, profileDB)
+        return None
+    
+    def write_unique_string_values_summary(self, profileDB='data_profile'):
+        """Write unique string value summary to the database
+        :param profileDB (str): Database to write profile data to
+        """
+        if self._string_data_profile is None:
+            self.unique_string_values_count()
         
-        summary_df = spark.createDataFrame(new_rows_list, columns).withColumn("__date", f.current_date())
+        summary_data = self._string_data_profile
+        summary_type = "unique_string_values"
         
-        # Write summary to database
-        self._summary_writer(summary_df, dtype, profileDB)
+        if summary_data is None:
+            print(f"No string data found in {self.tableName}. Skipping unique string values summary.")
+        else:
+            print(f"Attempting to write unique string values summary for {self.tableName} . . .")
+            
+            # Collect metadata rows
+            summary_df = summary_data.withColumn("__date", f.current_date().astype(DateType()))
+            
+            # Write summary to database
+            self._summary_writer(summary_df, summary_type, profileDB)
         return None
     
     #----- PRIVATE METHODS -----#
+    @classmethod
+    def _convert_ts_to_string(cls, df):
+        """Helper function to convert timestamp columns into string columns"""
+        # Cast timestamp columns as string values
+        for column in [c[0] for c in df.dtypes if c[1] == 'timestamp']:
+            df = df.withColumn(column, f.col(column).cast(StringType()))
+            
+        return df
+    
     def _create_new_row(self, title:str, rowTemplate:dict, rowType:str='count'):
         """Helper function to create a new row entry
         :param title: Title for the metadata row
@@ -271,6 +434,78 @@ class SparkDataSummary:
         return dataType
     
     @classmethod
+    def _get_summary_schema(cls, schemaType):
+        """Retrieve schema for summary data
+        NOTE: timestamp type not yet implemented
+        """
+        schema = {'bool':
+                  StructType([
+                      StructField('SourceDatabase', StringType()),
+                      StructField('SourceTable', StringType()),
+                      StructField('ColumnName', StringType()),
+                      StructField('Count', LongType()),
+                      StructField('True', LongType()),
+                      StructField('False', LongType()),
+                      StructField('Nulls', LongType()),
+                      StructField('Null%', DecimalType(5,2)),
+                      StructField('__date', DateType())]),
+                  'distinct_values':
+                  StructType([
+                      StructField('SourceDatabase', StringType()),
+                      StructField('SourceTable', StringType()),
+                      StructField('TotalRecords', LongType()),
+                      StructField('ColumnName', StringType()),
+                      StructField('TotalValues', LongType()),
+                      StructField('DistinctCount', LongType()),
+                      StructField('__date', DateType())]),
+                  'numeric':
+                  StructType([
+                      StructField('SourceDatabase', StringType()),
+                      StructField('SourceTable', StringType()),
+                      StructField('ColumnName', StringType()),
+                      StructField('Nulls', LongType()),
+                      StructField('Null%', DecimalType(5,2)),
+                      StructField('Count', LongType()),
+                      StructField('Mean', FloatType()),
+                      StructField('Stddev', FloatType()),
+                      StructField('Min', FloatType()),
+                      StructField('25%', FloatType()),
+                      StructField('50%', FloatType()),
+                      StructField('75%', FloatType()),
+                      StructField('Max', FloatType()),
+                      StructField('__date', DateType())]),
+                  'string':
+                  StructType([
+                      StructField('SourceDatabase', StringType()),
+                      StructField('SourceTable', StringType()),
+                      StructField('ColumnName', StringType()),
+                      StructField('Distinct', LongType()),
+                      StructField('Nulls', LongType()),
+                      StructField('Null%', DecimalType(5,2)),
+                      StructField('Count', LongType()),
+                      StructField('__date', DateType())]),
+                  'timestamp':
+                  StructType([
+                      StructField('SourceDatabase', StringType()),
+                      StructField('SourceTable', StringType()),
+                      StructField('ColumnName', StringType()),
+                      StructField('Distinct', LongType()),
+                      StructField('Nulls', LongType()),
+                      StructField('Null%', DecimalType(5,2)),
+                      StructField('Count', LongType()),
+                      StructField('__date', DateType())]),
+                  'unique_string_values':
+                  StructType([
+                      StructField('SourceDatabase', StringType(), False),
+                      StructField('SourceTable', StringType(), False),
+                      StructField('ColumnName', StringType(), False),
+                      StructField("ColumnValue", StringType(), True),
+                      StructField("DistinctCount", IntegerType(), True)])
+                 }[schemaType]
+        
+        return schema
+    
+    @classmethod
     def _make_row_template(cls, columns):
         """Helper function to manually create a row template
         :param columns (list): Column names to include in the summary"""
@@ -291,23 +526,38 @@ class SparkDataSummary:
             spark.sql(f"CREATE DATABASE {profileDB}")
             
         spark.catalog.setCurrentDatabase(profileDB)
-        table = dtype + "_data"
-        print(f"Attempting to write data to {table} . . .")
+        table = dtype.lower() + "_summary"
+        
         df.write.saveAsTable(table, mode='append', partitionBy=['__date','SourceDatabase','SourceTable'])
+        _ = spark.sql(f"OPTIMIZE {profileDB}.{table}")
         print("Write successful!")
         return None
+    
+    @classmethod
+    def _transform_summary(cls, df, schemaType):
+        """Function for conforming summary data to their proper schemas"""
+        schema = cls._get_summary_schema(schemaType)
+        
+        for field in schema:
+            name = field.name
+            dtype = field.dataType
+            df = df.withColumn(name, f.col(name).cast(dtype))
+            
+        return df
     
     def _typed_df(self, dtype):
         """Subset a dataframe by column data types
         """
-        assert dtype in self._summaryTypes, f"Invalid dtype: accepts {self._summaryTypes}"
+        assert dtype.lower() in self._summaryTypes, f"Invalid dtype: accepts {self._summaryTypes}"
+        getType = lambda t: str(t).split("Type")[0].lower()
         
-        if dtype == "bool":
-            fields = [f.name for f in self.df.schema if f.dataType == BooleanType()]
-        elif dtype == "numeric":
-            numTypes = (BinaryType(), DecimalType(), DoubleType(), FloatType(), IntegerType(), LongType())
-            fields = [f.name for f in self.df.schema if f.dataType in numTypes]
-        elif dtype == "string":
-            fields = [f.name for f in self.df.schema if f.dataType == StringType()]
+        dtypes = {
+            'bool':('boolean'),
+            'numeric':('binary', 'decimal', 'double', 'float', 'integer', 'long'),
+            'string':('string', 'timestamp')
+        }[dtype.lower()]
             
+        # Dataframe filtered to typed columns
+        fields = [f.name for f in self.df.schema if getType(f.dataType) in dtypes]
+        
         return self.df.select(fields)
