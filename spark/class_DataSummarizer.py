@@ -12,7 +12,7 @@ class SparkDataSummary:
         :param df (dataframe): Dataframe to be profiled
         :param dbName (str): Database name of table being profiled
         :param tableName (str): Name of the table being profiled
-        :param dtypeChanges (str): Accepts (strictly) comma-delimited string of column-type associations 
+        :param dtypeChanges (str): Accepts comma-delimited string of column-type associations 
         e.g.: "col1 int,col2 bool" will attempt to cast col1 and col2 as integer and boolean types, respectively.
         """
         self.dbName = dbName.lower()
@@ -230,11 +230,16 @@ class SparkDataSummary:
     
     def update_dtypes(self, colTypes:str, returnSchema=True):
         """Cast columns as different types
-        :param colTypes (str): Accepts (strictly) comma-delimited string of column-type associations 
+        :param colTypes (str): Accepts comma-delimited string of column-type associations 
         e.g.: "col1 int,col2 bool" will attempt to cast col1 and col2 as integer and boolean types, respectively.
         
         :param returnSchema (boolean): Returns new dataframe schema, if True
         """
+        # Remove extra spaces from the string
+        for r in range(5,0,-1):
+            colTypes = colTypes.replace(" "*r, " ")
+        colTypes = colTypes.replace(", ", ",")
+        
         for ct in colTypes.split(","):
             column, dtype = ct.split(' ')
             sparkType = self._get_spark_data_type(dtype)
