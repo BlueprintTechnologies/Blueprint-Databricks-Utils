@@ -1,5 +1,6 @@
 # Databricks notebook source
 # DBTITLE 1,Package Imports
+
 import pyspark.sql.functions as f
 from pyspark.sql.types import *
 
