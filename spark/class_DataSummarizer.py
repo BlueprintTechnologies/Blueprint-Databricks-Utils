@@ -6,6 +6,10 @@ from pyspark.sql.types import *
 # COMMAND ----------
 
 # DBTITLE 1,Class Definition
+"""
+Created on Monday, December 5, 2022 at 19:24 by Adrian Tullock <atullock@bpcs.com>
+Copyright (C) 2022, by Blueprint Technologies. All Rights Reserved.
+"""
 class SparkDataSummary:
     def __init__(self, df, dbName:str, tableName:str, dtypeChanges=None):
         """Initialization
