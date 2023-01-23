@@ -10,10 +10,13 @@ Copyright (C) 2022, by Blueprint Technologies. All Rights Reserved.
 """
 class SnowflakeDataTool:
     def __init__(self):
-        # Snowflake connection object
-        self._sfConnection = self.connect()
-        
+        # List of tables
         self._sfTables = []
+        
+        # Snowflake connection object
+        self._sfConnection = None
+        self.connect()
+        
     
     #----- PUBLIC METHODS-----#
     def connect(self, schema:str=None):
@@ -29,7 +32,7 @@ class SnowflakeDataTool:
         else:
             self._query_table_list()
         
-        return
+        return None
     
     def is_connected(self):
         """Verify if connected to Snowflake database"""
@@ -71,7 +74,7 @@ class SnowflakeDataTool:
         connOptions = {
             "sfUrl": "https://<address>.snowflakecomputing.com/",
             "sfUser": "User",
-            "sfPassword": "Password"
+            "sfPassword": "Password",
             "sfDatabase": "Database",
             "sfSchema": self.snowflake_schema,
             "sfWarehouse": "Warehouse",
